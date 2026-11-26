@@ -1,0 +1,191 @@
+name: "shotguard"
+description: "OCR secret scanner for screenshots, images, GIFs, and video attachments in GitHub Issues, PRs, and repositories."
+
+branding:
+  icon: "shield"
+  color: "red"
+
+inputs:
+  github-token:
+    description: "GitHub token used to fetch private attachments and post PR/issue comments."
+    required: false
+    default: ${{ github.token }}
+  comment:
+    description: "Post or update a redacted summary comment when findings are detected."
+    required: false
+    default: "true"
+  fail-on-finding:
+    description: "Fail the step (exit code 1) when findings are detected."
+    required: false
+    default: "true"
+  rules:
+    description: "Optional path to a custom JSON or TOML rules file."
+    required: false
+    default: ""
+  allow-any-host:
+    description: "Allow HTTPS URLs outside GitHub asset hosts (private/loopback IPs remain blocked)."
+    required: false
+    default: "false"
+  max-frames:
+    description: "Maximum frames sampled from GIF or video files."
+    required: false
+    default: "10"
+  max-bytes:
+    description: "Maximum attachment download size in bytes."
+    required: false
+    default: "15728640"
+  sarif-file:
+    description: "Optional path to write SARIF 2.1.0 output."
+    required: false
+    default: ""
+  scan-repo-images:
+    description: "Also scan image files in the checked-out repository."
+    required: false
+    default: "false"
+  scan-video:
+    description: "Install ffmpeg if missing and scan GIF/video files."
+    required: false
+    default: "false"
+
+outputs:
+  findings-count:
+    description: "Total number of findings detected."
+    value: ${{ steps.run-shotguard.outputs.findings-count }}
+  report-path:
+    description: "Path to the generated JSON report."
+    value: ${{ steps.run-shotguard.outputs.report-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install OCR dependencies
+      shell: bash
+      env:
+        INPUT_SCAN_VIDEO: ${{ inputs.scan-video }}
+      run: |
+        missing=()
+        if ! command -v tesseract >/dev/null 2>&1; then
+          missing+=(tesseract-ocr)
+        fi
+        if [[ "${INPUT_SCAN_VIDEO}" == "true" ]] && ! command -v ffmpeg >/dev/null 2>&1; then
+          missing+=(ffmpeg)
+        fi
+        if [[ ${#missing[@]} -gt 0 ]]; then
+          sudo apt-get update
+          sudo apt-get install -y "${missing[@]}"
+        fi
+
+    - name: Run shotguard
+      id: run-shotguard
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_FAIL_ON_FINDING: ${{ inputs.fail-on-finding }}
+        INPUT_RULES: ${{ inputs.rules }}
+        INPUT_ALLOW_ANY_HOST: ${{ inputs.allow-any-host }}
+        INPUT_MAX_FRAMES: ${{ inputs.max-frames }}
+        INPUT_MAX_BYTES: ${{ inputs.max-bytes }}
+        INPUT_SARIF_FILE: ${{ inputs.sarif-file }}
+        INPUT_SCAN_REPO_IMAGES: ${{ inputs.scan-repo-images }}
+        INPUT_SCAN_VIDEO: ${{ inputs.scan-video }}
+      run: |
+        set -euo pipefail
+        export PYTHONPATH="${GITHUB_ACTION_PATH}${PYTHONPATH:+:${PYTHONPATH}}"
+
+        event_report="${RUNNER_TEMP}/shotguard-event.json"
+        repo_report="${RUNNER_TEMP}/shotguard-repo.json"
+        final_report="${RUNNER_TEMP}/shotguard-report.json"
+
+        rm -f "${event_report}" "${repo_report}" "${final_report}"
+
+        event_args=(
+          --no-fail-on-finding
+          --max-frames "${INPUT_MAX_FRAMES}"
+          --max-bytes "${INPUT_MAX_BYTES}"
+          --output-json "${event_report}"
+        )
+        if [[ "${INPUT_COMMENT}" == "true" ]]; then
+          event_args+=(--comment)
+        else
+          event_args+=(--no-comment)
+        fi
+        if [[ "${INPUT_ALLOW_ANY_HOST}" == "true" ]]; then
+          event_args+=(--allow-any-host)
+        fi
+        if [[ "${INPUT_SCAN_VIDEO}" == "true" ]]; then
+          event_args+=(--scan-video)
+        else
+          event_args+=(--no-scan-video)
+        fi
+        if [[ -n "${INPUT_RULES}" ]]; then
+          event_args+=(--rules "${INPUT_RULES}")
+        fi
+
+        case "${GITHUB_EVENT_NAME:-}" in
+          issues|pull_request|pull_request_target|issue_comment)
+            if [[ -n "${GITHUB_EVENT_PATH:-}" && -f "${GITHUB_EVENT_PATH}" ]]; then
+              python3 -m shotguard event "${GITHUB_EVENT_PATH}" "${event_args[@]}"
+            fi
+            ;;
+        esac
+
+        if [[ "${INPUT_SCAN_REPO_IMAGES}" == "true" ]]; then
+          scan_args=(. --format json --max-frames "${INPUT_MAX_FRAMES}")
+          if [[ "${INPUT_SCAN_VIDEO}" == "true" ]]; then
+            scan_args+=(--scan-video)
+          fi
+          if [[ -n "${INPUT_RULES}" ]]; then
+            scan_args+=(--rules "${INPUT_RULES}")
+          fi
+          set +e
+          python3 -m shotguard scan "${scan_args[@]}" > "${repo_report}"
+          scan_rc=$?
+          set -e
+          if [[ "${scan_rc}" -gt 1 ]]; then
+            exit "${scan_rc}"
+          fi
+        fi
+
+        python3 - "${event_report}" "${repo_report}" "${final_report}" "${INPUT_SARIF_FILE}" "${GITHUB_OUTPUT}" "${INPUT_FAIL_ON_FINDING}" <<'PY'
+        import json
+        import sys
+        from pathlib import Path
+
+        from shotguard import __version__
+        from shotguard.github import build_sarif
+        from shotguard.rules import Finding
+
+        event_path, repo_path, out_path, sarif_path, gh_output, fail_flag = sys.argv[1:7]
+
+        merged_findings: list[dict] = []
+        report: dict = {"version": __version__, "findings_count": 0, "findings": []}
+
+        for p_str in (event_path, repo_path):
+            p = Path(p_str)
+            if p.is_file():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                merged_findings.extend(data.get("findings", []))
+                if "event" in data:
+                    report["event"] = data["event"]
+                if "urls_scanned" in data:
+                    report["urls_scanned"] = data["urls_scanned"]
+
+        report["findings"] = merged_findings
+        report["findings_count"] = len(merged_findings)
+        Path(out_path).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+        if sarif_path:
+            finding_objs = [Finding(**item) for item in merged_findings]
+            sp = Path(sarif_path)
+            sp.parent.mkdir(parents=True, exist_ok=True)
+            sp.write_text(json.dumps(build_sarif(finding_objs), indent=2) + "\n", encoding="utf-8")
+
+        if gh_output:
+            with open(gh_output, "a", encoding="utf-8") as fh:
+                fh.write(f"findings-count={len(merged_findings)}\n")
+                fh.write(f"report-path={out_path}\n")
+
+        if fail_flag == "true" and merged_findings:
+            sys.exit(1)
+        PY

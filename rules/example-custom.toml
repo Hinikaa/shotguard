@@ -1,0 +1,18 @@
+# Example custom rule pack for shotguard.
+# Pass with: shotguard scan --rules rules/example-custom.toml path/to/image.png
+
+[[rules]]
+id = "internal-service-token"
+name = "Internal Service Token"
+pattern = '\b(int_svc_[A-Za-z0-9]{24,64})\b'
+severity = "high"
+min_entropy = 3.0
+keywords = ["int_svc_"]
+
+[[rules]]
+id = "acme-webhook-secret"
+name = "Acme Webhook Secret"
+pattern = '\b(whsec_[A-Za-z0-9]{24,64})\b'
+severity = "medium"
+min_entropy = 3.2
+keywords = ["whsec_"]
