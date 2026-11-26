@@ -7,6 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/Hinikaa/shotguard/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Hinikaa/shotguard/ci.yml?style=flat-square&label=ci" alt="CI"></a>
+  <a href="https://github.com/Hinikaa/shotguard/releases"><img src="https://img.shields.io/github/v/release/Hinikaa/shotguard?style=flat-square&color=58a6ff" alt="Release"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/pip_deps-0-2ea043?style=flat-square" alt="Zero pip dependencies">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-555555?style=flat-square" alt="MIT License"></a>
@@ -34,7 +35,19 @@ sudo apt-get install -y tesseract-ocr ffmpeg
 brew install tesseract ffmpeg
 ```
 
-Install from source or run directly from a checkout:
+Install a prebuilt wheel or standalone zipapp from [Releases](https://github.com/Hinikaa/shotguard/releases):
+
+```bash
+# Prebuilt wheel
+pip install https://github.com/Hinikaa/shotguard/releases/download/v0.1.0/shotguard-0.1.0-py3-none-any.whl
+
+# Or standalone executable zipapp (no pip install needed)
+curl -fsSLO https://github.com/Hinikaa/shotguard/releases/download/v0.1.0/shotguard.pyz
+chmod +x shotguard.pyz
+./shotguard.pyz --help
+```
+
+Or install from source:
 
 ```bash
 pip install .
